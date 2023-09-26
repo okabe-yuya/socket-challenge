@@ -1,53 +1,86 @@
 package main
 
 import (
+	"errors"
 	"fmt"
+	"io"
+	"net"
 	"os"
 	"syscall"
-	"net"
+)
+
+const (
+	SERVER_HOST = "127.0.0.1"
+	SERVER_PORT = 8001
 )
 
 func main() {
-	// TCPソケットを作成
-	fd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_STREAM, syscall.IPPROTO_IP)
+	fd, err := listenSocket(SERVER_HOST, SERVER_PORT)
 	if err != nil {
-		fmt.Println("Error creating socket:", err)
+		fmt.Println("[ERROR] Caused error:", err)
 		os.Exit(1)
 	}
 	defer syscall.Close(fd)
 
-	// ソケットにアドレスを割り当て(bind)
-	addr := syscall.SockaddrInet4{ Port: 8001 }
-	copy(addr.Addr[:], net.ParseIP("0.0.0.0").To4())
-	if err := syscall.Bind(fd, &addr); err != nil {
-		fmt.Println("Error binding socket:", err)
-		os.Exit(1)
-	}
+	fmt.Printf("[INFO] Server is listening on %s:%d...\n", SERVER_HOST, SERVER_PORT)
 
-	// ソケットのリッスンを開始
-	if err := syscall.Listen(fd, syscall.SOMAXCONN); err != nil {
-		fmt.Println("Error listen socket:", err)
-		os.Exit(1)
-	}
-
-	// 無限ループを利用してクライアントの受付を開始
-	fmt.Println("Server is listening on 0.0.0.0:8081")
 	for {
 		clientFd, _, err := syscall.Accept(fd)
 		if err != nil {
-			fmt.Println("Error accepting connection: ", err)
+			fmt.Println("[ERROR] Failed accept connection: ", err)
 			continue
 		}
 
-		// クライアント受付後、並列処理でレスポンスを書き込み
-		go func(fd int) {
-			defer syscall.Close(fd)
-
-			data := []byte("hello world")
-			if _, err := syscall.Write(fd, data); err != nil {
-				fmt.Println("Error writing: ", err)
-				return
-			}
-		}(clientFd)
+		fmt.Println("[INFO] Accepted client")
+		go handleClient(clientFd)
 	}
+}
+
+func listenSocket(host string, port int) (int, error) {
+	fd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_STREAM, syscall.IPPROTO_IP)
+	if err != nil {
+		return 0, errors.New("Failed create socket")
+	}
+
+	addr := syscall.SockaddrInet4{ Port: port }
+	copy(addr.Addr[:], net.ParseIP(host).To4())
+	if err := syscall.Bind(fd, &addr); err != nil {
+		return 0, errors.New("Failed binding socket")
+	}
+
+	if err := syscall.Listen(fd, syscall.SOMAXCONN); err != nil {
+		return 0, errors.New("Failed listen socket")
+	}
+	return fd, nil
+}
+
+func handleClient(clientFd int) {
+	buffer := make([]byte, 1024)
+	soundFile, err := os.Open("./static/birdland1.mp3")
+	if err != nil {
+		fmt.Println("[ERROR] Failed Open file: ", err)
+		os.Exit(1)
+	}
+	defer soundFile.Close()
+
+	for {
+		n, err := soundFile.Read(buffer)
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			fmt.Println("[ERROR] Failed Read buffer: ", err)
+			return
+		}
+		if _, err := syscall.Write(clientFd, buffer[:n]); err != nil {
+			fmt.Println("[ERROR] Failed Write buffer to file descriptor: ", err)
+			return
+		}
+	}
+
+	if _, err := syscall.Write(clientFd, []byte("EOF")); err != nil {
+		fmt.Println("[ERROR] Failed Write 'EOF' to file descriptor: ", err)
+		os.Exit(1)
+	}
+	syscall.Close(clientFd)
 }
